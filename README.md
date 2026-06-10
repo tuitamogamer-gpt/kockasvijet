@@ -2,7 +2,7 @@
 
 3D igra gradnje i preživljavanja od kockica — kompletna voxel sandbox igra u čistom JavaScriptu i WebGL2, **bez ijednog vanjskog fajla**: sve teksture, zvukovi i muzika se generišu programski u toku igre.
 
-**🎮 Igraj odmah:** _(link dolazi nakon deploya)_
+**🎮 Igraj odmah: [kockasvijet.vercel.app](https://kockasvijet.vercel.app)**
 
 ## Šta ima u igri
 
