@@ -1,0 +1,5 @@
+.claude/
+.vercel/
+*.log
+Thumbs.db
+desktop.ini
