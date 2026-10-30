@@ -83,8 +83,8 @@ KS.inLiquid = function (world, box, frac) {
 };
 
 // DDA raycast kroz voxele; vraća {x,y,z,px,py,pz,face,id,dist} ili null
-// solidFn: koje blokove pogađa (default svi osim tečnosti)
-KS.raycast = function (world, ox, oy, oz, dx, dy, dz, maxDist, hitLiquid) {
+// pogađa sve blokove osim tečnosti (hitLiquid: i tečnosti; solidOnly: samo čvrste, za liniju vida)
+KS.raycast = function (world, ox, oy, oz, dx, dy, dz, maxDist, hitLiquid, solidOnly) {
   let x = Math.floor(ox), y = Math.floor(oy), z = Math.floor(oz);
   const stepX = Math.sign(dx) || 1, stepY = Math.sign(dy) || 1, stepZ = Math.sign(dz) || 1;
   const tDeltaX = dx !== 0 ? Math.abs(1 / dx) : Infinity;
@@ -100,7 +100,7 @@ KS.raycast = function (world, ox, oy, oz, dx, dy, dz, maxDist, hitLiquid) {
     const id = world.getBlock(x, y, z);
     if (id) {
       const def = KS.blocks[id];
-      const hit = def.liquid ? !!hitLiquid : true;
+      const hit = def.liquid ? !!hitLiquid : (solidOnly ? def.solid : true);
       if (hit && t <= maxDist) {
         return { x, y, z, px, py, pz, face, id, dist: t };
       }

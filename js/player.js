@@ -114,7 +114,8 @@ Player.prototype.die = function () {
   this.dead = true;
   this.hp = 0;
   KS.snd.play('die', { vol: 1 });
-  // ispusti sve
+  // prvo zatvori prozor (craft grid/kursor se vraćaju u inventar), pa ispusti sve
+  if (KS.ui) KS.ui.closeWindow(true);
   for (let i = 0; i < 36; i++) {
     if (this.inv[i]) {
       KS.spawnItem(this.world, this.x, this.y + 0.8, this.z, this.inv[i]);
@@ -167,7 +168,7 @@ Player.prototype.update = function (dt, input, game) {
 
   this.sneaking = input.sneak && !this.flying;
   if (input.sprint && input.fwd && !this.sneaking && (creative || this.food > 6)) this.sprinting = true;
-  if (!input.fwd || this.sneaking) this.sprinting = false;
+  if (!input.fwd || this.sneaking || (!creative && this.food <= 6)) this.sprinting = false;
 
   let speed = 4.32;
   if (this.sprinting) speed *= 1.42;
@@ -183,7 +184,8 @@ Player.prototype.update = function (dt, input, game) {
   this.vx += wx * speed * accel * dt * 0.28;
   this.vz += wz * speed * accel * dt * 0.28;
   const hv = Math.hypot(this.vx, this.vz);
-  if (hv > speed) { this.vx *= speed / hv; this.vz *= speed / hv; }
+  // dok traje odbacivanje (udarac/eksplozija) ne ograničavaj brzinu, inače se knockback poništi
+  if (hv > speed && this.hurtT <= 0) { this.vx *= speed / hv; this.vz *= speed / hv; }
 
   if (this.flying) {
     this.vy *= Math.pow(0.02, dt);
@@ -204,6 +206,8 @@ Player.prototype.update = function (dt, input, game) {
       KS.snd.play('jump', { vol: 0.5 });
     }
   }
+  // stopala u vodi + uz zid (obala) + skok → izađi na blok iznad; samo plutanje ne podigne dovoljno
+  if (!this.flying && input.jump && this.wallHit && KS.inLiquid(world, this, 0.05)) this.vy = Math.max(this.vy, 8.4);
 
   // trenje
   const standOn = world.getBlock(Math.floor(this.x), Math.floor(this.y - 0.4), Math.floor(this.z));
@@ -247,6 +251,7 @@ Player.prototype.update = function (dt, input, game) {
   if (res.hitY) this.vy = 0;
   if (res.hitX) this.vx = 0;
   if (res.hitZ) this.vz = 0;
+  this.wallHit = res.hitX || res.hitZ;
 
   // koraci (zvuk)
   const hDist = Math.hypot(movedX, movedZ);
@@ -321,7 +326,9 @@ Player.prototype.update = function (dt, input, game) {
   this.target = KS.raycast(world, eye.x, eye.y, eye.z, dir.x, dir.y, dir.z, reach);
 
   // ---- rudarenje ----
-  if (input.attack && this.target && !this.dead && !game.uiOpen) {
+  // udarac u moba ne kopa i blok iza njega dok se dugme ne pusti
+  if (!input.attack) this.noDigUntilRelease = false;
+  if (input.attack && this.target && !this.dead && !game.uiOpen && !this.noDigUntilRelease) {
     const t = this.target;
     if (creative) {
       if (!this.lastInstaBreak || this.lastInstaBreak < game.now - 0.22) {
@@ -330,16 +337,19 @@ Player.prototype.update = function (dt, input, game) {
         this.swingT = 1;
       }
     } else {
-      if (!this.mining || this.mining.x !== t.x || this.mining.y !== t.y || this.mining.z !== t.z) {
-        const info = KS.breakInfo(t.id, this.heldId());
-        this.mining = { x: t.x, y: t.y, z: t.z, progress: 0, time: info.time, canHarvest: info.canHarvest, id: t.id };
+      const held = this.heldId();
+      // novi blok ili promijenjen alat u ruci → kopanje kreće ispočetka s novim vremenom
+      if (!this.mining || this.mining.x !== t.x || this.mining.y !== t.y || this.mining.z !== t.z || this.mining.held !== held) {
+        const info = KS.breakInfo(t.id, held);
+        this.mining = { x: t.x, y: t.y, z: t.z, progress: 0, time: info.time, canHarvest: info.canHarvest, id: t.id, held };
       }
       this.mining.progress += dt;
       this.swingT = 1;
       if (Math.random() < dt * 5) {
         const def = KS.blocks[t.id];
         KS.snd.play('dig', { pos: { x: t.x + 0.5, y: t.y + 0.5, z: t.z + 0.5 }, mat: this.matOf(def), vol: 0.6 });
-        KS.particles.burstBlock(t.x, t.y, t.z, t.id, 2);
+        // čestice ispred pogođene strane (unutar punog bloka se ne vide)
+        KS.particles.burstBlock(t.x + (t.px - t.x) * 0.7, t.y + (t.py - t.y) * 0.7, t.z + (t.pz - t.z) * 0.7, t.id, 2);
       }
       if (this.mining.progress >= this.mining.time) {
         this.breakBlock(t.x, t.y, t.z, this.mining.canHarvest);
@@ -378,6 +388,7 @@ Player.prototype.breakBlock = function (x, y, z, canHarvest) {
   if (!id) return;
   const def = KS.blocks[id];
   if (def.h < 0) return;
+  KS.dropBlockEntContents(world, x, y, z);
   world.setBlock(x, y, z, 0);
   KS.snd.play('break', { pos: { x: x + 0.5, y: y + 0.5, z: z + 0.5 }, mat: this.matOf(def), vol: 1 });
   KS.particles.burstBlock(x, y, z, id, 14);
@@ -442,7 +453,7 @@ Player.prototype.useBlock = function (game) {
   const px = t.px, py = t.py, pz = t.pz;
   if (world.getBlock(px, py, pz) !== 0) {
     const existing = KS.blocks[world.getBlock(px, py, pz)];
-    if (!existing || !existing.cross) return false;
+    if (!existing || !(existing.cross || existing.liquid)) return false;
   }
   // uslovi podrške
   if (bdef.needsSoil) {
@@ -486,7 +497,7 @@ Player.prototype.attackPress = function (game) {
   const world = this.world;
   let best = null, bestD = 3.4;
   for (const e of world.entities) {
-    if (e.dead || e.kind === 'item') continue;
+    if (e.dead || e.kind !== 'mob') continue;
     // ray vs AABB
     const minX = e.x - e.w, maxX = e.x + e.w, minY = e.y, maxY = e.y + e.h, minZ = e.z - e.w, maxZ = e.z + e.w;
     let tmin = 0, tmax = bestD, ok = true;
@@ -501,8 +512,8 @@ Player.prototype.attackPress = function (game) {
       }
     }
     if (ok && tmin < bestD) {
-      // blokovi ispred?
-      const bHit = KS.raycast(world, eye.x, eye.y, eye.z, dir.x, dir.y, dir.z, tmin);
+      // čvrsti blokovi ispred? (trava/cvijeće/baklja ne zaklanjaju)
+      const bHit = KS.raycast(world, eye.x, eye.y, eye.z, dir.x, dir.y, dir.z, tmin, false, true);
       if (!bHit) { best = e; bestD = tmin; }
     }
   }
@@ -516,6 +527,8 @@ Player.prototype.attackPress = function (game) {
     best.hurt(dmg, this);
     KS.snd.play('attack', { vol: 0.8 });
     this.addExhaustion(0.1);
+    this.noDigUntilRelease = true;
+    this.mining = null;
     return true;
   }
   return false;

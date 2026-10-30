@@ -53,19 +53,23 @@ KS.save = {
   deleteWorld (id) {
     const list = this.listWorlds().filter(w => w.id !== id);
     this._saveList(list);
-    for (const k of KS.store.keys(PRE + 'w_' + id)) KS.store.del(k);
+    // tačan ključ + chunkovi (samo prefiks bi pogodio i svijet čiji id počinje istim znakovima)
+    KS.store.del(PRE + 'w_' + id);
+    for (const k of KS.store.keys(PRE + 'w_' + id + '_c_')) KS.store.del(k);
   },
 
   // ---------- svijet ----------
   // meta+player+blockEnts u jednom ključu; chunkovi odvojeno
   saveWorld (game) {
     const world = game.world, p = game.player;
+    // mrtav igrač se sprema kao da je već oživljen (inače se učita živ sa 0 srca na mjestu smrti)
+    const pos = p && p.dead ? p.spawn : p;
     const meta = {
       seed: world.seed, mode: world.mode, type: world.type, diff: world.diff, name: world.name,
       time: world.time,
       player: p ? {
-        x: p.x, y: p.y, z: p.z, yaw: p.yaw, pitch: p.pitch,
-        hp: p.hp, food: p.food, air: p.air, sel: p.sel,
+        x: pos.x, y: pos.y, z: pos.z, yaw: p.yaw, pitch: p.pitch,
+        hp: p.dead ? 20 : p.hp, food: p.dead ? 20 : p.food, air: p.dead ? 300 : p.air, sel: p.sel,
         inv: p.inv.map(s => s ? { id: s.id, n: s.n, dur: s.dur } : null),
         spawn: p.spawn,
       } : null,
@@ -85,7 +89,7 @@ KS.save = {
     }
     // ažuriraj savedChunks u meti (nakon dodavanja novih)
     meta.savedChunks = [...world.savedChunkKeys];
-    KS.store.set(PRE + 'w_' + world.id, JSON.stringify(meta));
+    if (!KS.store.set(PRE + 'w_' + world.id, JSON.stringify(meta))) ok = false;
 
     // lastPlayed u listi
     const list = this.listWorlds();

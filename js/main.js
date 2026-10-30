@@ -29,6 +29,7 @@ const input = {
 function boot () {
   KS.setLang(KS.opts.lang);
   KS.particles.level = KS.opts.particles;
+  KS.snd.volumes.master = KS.opts.master; KS.snd.volumes.music = KS.opts.music; KS.snd.volumes.sfx = KS.opts.sfx;
 
   const canvas = $('glcanvas');
   try {
@@ -157,7 +158,7 @@ function renderWorldList () {
   for (const w of list) {
     const card = document.createElement('div');
     card.className = 'world-card';
-    const date = new Date(w.lastPlayed).toLocaleDateString('bs-BA', { day: 'numeric', month: 'numeric', year: 'numeric' });
+    const date = new Date(w.lastPlayed).toLocaleDateString(KS.langId === 'en' ? 'en-GB' : 'bs-BA', { day: 'numeric', month: 'numeric', year: 'numeric' });
     card.innerHTML = `<div><div class="wname"></div><div class="winfo"></div></div><div style="font-size:22px">▶</div>`;
     card.querySelector('.wname').textContent = w.name;
     card.querySelector('.winfo').textContent = `${KS.t('mode.' + w.mode)} · ${KS.t('type.' + (w.type || 'normal'))} · ${date}`;
@@ -270,6 +271,7 @@ function startGame (worldMeta, isNew) {
     cx: Math.floor(player.x) >> 4,
     cz: Math.floor(player.z) >> 4,
     started: performance.now(),
+    isNew: !saved || !saved.player,
   };
 }
 
@@ -318,8 +320,14 @@ document.addEventListener('pointerlockchange', () => {
 });
 function openPause () {
   paused = true;
+  clearInput();
   KS.ui.showScreen('pause');
 }
+// pusti sve tipke (inače nakon Alt+Tab/pauze igrač nastavi hodati ili kopati sam od sebe)
+function clearInput () {
+  for (const k in input) input[k] = false;
+}
+window.addEventListener('blur', clearInput);
 function resumeGame () {
   paused = false;
   KS.ui.hideRecipes();
@@ -395,6 +403,8 @@ function setupInput () {
     if (['F1', 'F2', 'F3', 'F4', 'Tab'].includes(code)) e.preventDefault();
 
     if (state !== 'game') return;
+    // Ctrl je tipka za trčanje — blokiraj prečice preglednika (Ctrl+S, Ctrl+D...) dok se igra
+    if (e.ctrlKey && !g.uiOpen && !paused) e.preventDefault();
 
     // UI otvoren
     if (g.uiOpen) {
@@ -465,8 +475,12 @@ function setupInput () {
     }
   });
 
-  window.addEventListener('beforeunload', () => {
-    if (KS.game) KS.save.saveWorld(KS.game);
+  window.addEventListener('beforeunload', (e) => {
+    if (!KS.game) return;
+    KS.ui.closeWindow(true);
+    KS.save.saveWorld(KS.game);
+    // Ctrl+W (trčanje + naprijed) zatvara tab — preglednik tad pita "Napustiti stranicu?"
+    if (state === 'game') { e.preventDefault(); e.returnValue = ''; }
   });
 }
 
@@ -475,6 +489,9 @@ function streamChunks (game, centerX, centerZ, radius, budgetMs) {
   const world = game.world;
   const t0 = performance.now();
   const ccx = centerX >> 4, ccz = centerZ >> 4;
+
+  // 0) izbaci daleke chunkove — prije posla s budžetom, inače se nikad ne stigne dok se leti
+  if ((game._unloadT = (game._unloadT || 0) + 1) % 120 === 0) unloadFar(game, ccx, ccz, radius);
 
   // 1) hitni remesh (izmjene blokova/svjetla)
   if (world.dirtyMesh.size) {
@@ -539,22 +556,22 @@ function streamChunks (game, centerX, centerZ, radius, budgetMs) {
       }
     }
   }
+}
 
-  // 3) izbaci daleke chunkove
-  if ((game._unloadT = (game._unloadT || 0) + 1) % 120 === 0) {
-    const maxD = radius + 4;
-    for (const [key, c] of world.chunks) {
-      if (Math.abs(c.cx - ccx) > maxD || Math.abs(c.cz - ccz) > maxD) {
-        if (c.modified && world.id !== '__menu__') {
-          const data = KS.bytesToB64(KS.rleEncode(c.blocks));
-          if (KS.store.set('ks_w_' + world.id + '_c_' + c.cx + '_' + c.cz, data)) {
-            world.savedChunkKeys.add(c.cx + ',' + c.cz);
-          }
-        }
-        renderer.deleteChunk(c);
-        world.chunks.delete(key);
-        world.dirtyMesh.delete(c);
+function unloadFar (game, ccx, ccz, radius) {
+  const world = game.world;
+  const maxD = radius + 4;
+  for (const [key, c] of world.chunks) {
+    if (Math.abs(c.cx - ccx) > maxD || Math.abs(c.cz - ccz) > maxD) {
+      if (c.modified && world.id !== '__menu__') {
+        const data = KS.bytesToB64(KS.rleEncode(c.blocks));
+        if (KS.store.set('ks_w_' + world.id + '_c_' + c.cx + '_' + c.cz, data)) {
+          world.savedChunkKeys.add(c.cx + ',' + c.cz);
+        } else continue; // spremanje nije uspjelo → zadrži u memoriji da se izmjene ne izgube
       }
+      renderer.deleteChunk(c);
+      world.chunks.delete(key);
+      world.dirtyMesh.delete(c);
     }
   }
 }
@@ -609,11 +626,19 @@ function tick (t) {
     $('loading-bar').style.width = Math.round(prog * 100) + '%';
     if (prog > 0.4) $('loading-tip').textContent = KS.t('load.mesh');
     if (prog >= 1 || g.now > 25) {
-      // spusti igrača na tlo ako je novi svijet
       const w = g.world, p = g.player;
-      let y = KS.WH - 2;
-      while (y > 1 && !w.isSolid(Math.floor(p.x), y, Math.floor(p.z))) y--;
-      if (p.y < y + 1) { p.y = y + 1.01; p.spawn.y = p.y; }
+      const bx = Math.floor(p.x), bz = Math.floor(p.z);
+      if (g._loading.isNew) {
+        // novi svijet: stavi igrača na vrh stupca (i spawn na isto mjesto)
+        let y = KS.WH - 2;
+        while (y > 1 && !w.isSolid(bx, y, bz)) y--;
+        if (p.y < y + 1) { p.y = y + 1.01; p.spawn.y = p.y; }
+      } else {
+        // spremljen svijet: pomjeri samo ako je igrač zaglavljen u bloku (npr. teren se promijenio)
+        let y = Math.floor(p.y);
+        while (y < KS.WH - 2 && (w.isSolid(bx, y, bz) || w.isSolid(bx, y + 1, bz))) y++;
+        if (y !== Math.floor(p.y)) p.y = y + 0.01;
+      }
       p.fallStart = p.y;
       enterGame();
     }

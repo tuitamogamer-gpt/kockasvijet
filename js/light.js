@@ -18,15 +18,27 @@ function emissionOf (id) {
 
 const light = KS.light = {};
 
+// keš zadnjeg chunka — BFS uglavnom ostaje u istom chunku, a Map.get sa string ključem je skup.
+// Poništava se na ulazu u svaku javnu funkciju (chunkovi se ne dodaju/brišu tokom jednog poziva).
+let cacheW = null, cacheCX = 0, cacheCZ = 0, cacheC = null;
+function resetCache () { cacheW = null; cacheC = null; }
+function chunkOf (world, x, z) {
+  const cx = x >> 4, cz = z >> 4;
+  if (world === cacheW && cx === cacheCX && cz === cacheCZ) return cacheC;
+  cacheW = world; cacheCX = cx; cacheCZ = cz;
+  cacheC = world.chunks.get(cx + ',' + cz) || null;
+  return cacheC;
+}
+
 // pristup svjetlu preko svijeta (samo generisani chunkovi)
 function getL (world, ch, x, y, z) {
   if (y < 0 || y >= WH) return -1;
-  const c = world.chunks.get((x >> 4) + ',' + (z >> 4));
+  const c = chunkOf(world, x, z);
   if (!c || !c.generated) return -1;
   return ch === 0 ? c.skyL[(y << 8) | ((z & 15) << 4) | (x & 15)] : c.blkL[(y << 8) | ((z & 15) << 4) | (x & 15)];
 }
 function setL (world, ch, x, y, z, v, touched) {
-  const c = world.chunks.get((x >> 4) + ',' + (z >> 4));
+  const c = chunkOf(world, x, z);
   if (!c || !c.generated) return;
   const i = (y << 8) | ((z & 15) << 4) | (x & 15);
   if (ch === 0) c.skyL[i] = v; else c.blkL[i] = v;
@@ -42,7 +54,7 @@ function setL (world, ch, x, y, z, v, touched) {
 }
 function blockAt (world, x, y, z) {
   if (y < 0 || y >= WH) return 0;
-  const c = world.chunks.get((x >> 4) + ',' + (z >> 4));
+  const c = chunkOf(world, x, z);
   if (!c || !c.generated) return 255; // nepoznato → ne širi se
   return c.blocks[(y << 8) | ((z & 15) << 4) | (x & 15)];
 }
@@ -83,10 +95,16 @@ function unpropagate (world, ch, queue, reAdd, touched) {
       const nx = x + DIRS[d][0], ny = y + DIRS[d][1], nz = z + DIRS[d][2];
       const cur = getL(world, ch, nx, ny, nz);
       if (cur <= 0) continue;
-      const goesDown = ch === 0 && d === 3 && old === 15;
+      // nebo: kolona ispod ima isti nivo (15, ili konstantan nivo ispod lišća/vode) → zavisi od ove ćelije
+      const goesDown = ch === 0 && d === 3 && (old === 15 || cur === old);
       if (cur < old || goesDown) {
         setL(world, ch, nx, ny, nz, 0, touched);
         queue.push(nx, ny, nz, cur);
+        // susjedni izvor svjetla (baklja, lava...) ne smije ostati ugašen
+        if (ch === 1) {
+          const em = emissionOf(blockAt(world, nx, ny, nz));
+          if (em > 0) { setL(world, ch, nx, ny, nz, em, touched); reAdd.push(nx, ny, nz, em); }
+        }
       } else {
         reAdd.push(nx, ny, nz, cur);
       }
@@ -97,8 +115,10 @@ function unpropagate (world, ch, queue, reAdd, touched) {
 // ---------- inicijalno osvjetljenje chunka ----------
 // preduslov: teren chunka + svih 8 susjeda generisan
 light.lightChunk = function (world, c) {
+  resetCache();
   const x0 = c.cx * 16, z0 = c.cz * 16;
   const skyQ = [], blkQ = [];
+  const sky = c.skyL, blk = c.blkL;
 
   // 1) sunčeve kolone
   for (let lz = 0; lz < 16; lz++) {
@@ -110,33 +130,49 @@ light.lightChunk = function (world, c) {
         const op = opacityOf(id);
         if (op >= 15) lvl = 0;
         else if (op > 0) lvl = Math.max(0, lvl - op);
-        c.skyL[i] = lvl;
-        if (lvl > 1) skyQ.push(x0 + lx, y, z0 + lz, lvl);
+        sky[i] = lvl;
         const em = emissionOf(id);
-        if (em > 0) { c.blkL[i] = em; blkQ.push(x0 + lx, y, z0 + lz, em); }
-        if (lvl === 0 && y < 14 && em === 0) {
-          // ispod čvrste mase nema više šta — ali nastavljamo zbog pećina/emisije
+        if (em > 0) { blk[i] = em; blkQ.push(x0 + lx, y, z0 + lz, em); }
+      }
+    }
+  }
+  // BFS izvori: samo ćelije čije svjetlo može nešto promijeniti — rubne, ili one kojima je
+  // vodoravni susjed tamniji za više od 1 (ivice terena, ulazi u pećine, sjena drveća).
+  // Kolona sama po sebi je već tačna, pa sjeme za otvoreno nebo nije potrebno (ogromna ušteda).
+  for (let y = 0; y < WH; y++) {
+    for (let lz = 0; lz < 16; lz++) {
+      for (let lx = 0; lx < 16; lx++) {
+        const i = (y << 8) | (lz << 4) | lx;
+        const l = sky[i];
+        if (l <= 1) continue;
+        const t = l - 1;
+        if (lx === 0 || lx === 15 || lz === 0 || lz === 15 ||
+            sky[i - 1] < t || sky[i + 1] < t || sky[i - 16] < t || sky[i + 16] < t) {
+          skyQ.push(x0 + lx, y, z0 + lz, l);
         }
       }
     }
   }
 
-  // 2) uvuci svjetlo sa granica susjeda koji su već osvijetljeni
-  const pull = (nx, nz, edgeFn) => {
-    const n = world.chunkAt(nx, nz);
-    if (!n || !n.lit) return;
-    edgeFn(n);
+  // 2) uvuci svjetlo sa granica susjeda koji su već osvijetljeni (samo gdje je susjed svjetliji)
+  const pullEdge = (n, nlx, nlz, lx, lz) => {
+    const nx = n.cx * 16 + nlx, nz = n.cz * 16 + nlz;
+    for (let y = 0; y < WH; y++) {
+      const ni = (y << 8) | (nlz << 4) | nlx, i = (y << 8) | (lz << 4) | lx;
+      const s = n.skyL[ni];
+      if (s > 1 && s - 1 > sky[i]) skyQ.push(nx, y, nz, s);
+      const b = n.blkL[ni];
+      if (b > 1 && b - 1 > blk[i]) blkQ.push(nx, y, nz, b);
+    }
   };
-  const pushEdge = (x, y, z) => {
-    const s = getL(world, 0, x, y, z);
-    if (s > 1) skyQ.push(x, y, z, s);
-    const b = getL(world, 1, x, y, z);
-    if (b > 1) blkQ.push(x, y, z, b);
-  };
-  pull(c.cx - 1, c.cz, () => { for (let y = 0; y < WH; y++) for (let lz = 0; lz < 16; lz++) pushEdge(x0 - 1, y, z0 + lz); });
-  pull(c.cx + 1, c.cz, () => { for (let y = 0; y < WH; y++) for (let lz = 0; lz < 16; lz++) pushEdge(x0 + 16, y, z0 + lz); });
-  pull(c.cx, c.cz - 1, () => { for (let y = 0; y < WH; y++) for (let lx = 0; lx < 16; lx++) pushEdge(x0 + lx, y, z0 - 1); });
-  pull(c.cx, c.cz + 1, () => { for (let y = 0; y < WH; y++) for (let lx = 0; lx < 16; lx++) pushEdge(x0 + lx, y, z0 + 1); });
+  const nW = world.chunkAt(c.cx - 1, c.cz), nE = world.chunkAt(c.cx + 1, c.cz);
+  const nN = world.chunkAt(c.cx, c.cz - 1), nS = world.chunkAt(c.cx, c.cz + 1);
+  for (let k = 0; k < 16; k++) {
+    if (nW && nW.lit) pullEdge(nW, 15, k, 0, k);
+    if (nE && nE.lit) pullEdge(nE, 0, k, 15, k);
+    if (nN && nN.lit) pullEdge(nN, k, 15, k, 0);
+    if (nS && nS.lit) pullEdge(nS, k, 0, k, 15);
+  }
 
   const touched = new Set();
   propagate(world, 0, skyQ, touched);
@@ -148,6 +184,7 @@ light.lightChunk = function (world, c) {
 
 // ---------- inkrementalna izmjena bloka ----------
 light.onBlockChanged = function (world, x, y, z, oldId, newId) {
+  resetCache();
   const touched = new Set();
   const oldOp = opacityOf(oldId), newOp = opacityOf(newId);
   const oldEm = emissionOf(oldId), newEm = emissionOf(newId);

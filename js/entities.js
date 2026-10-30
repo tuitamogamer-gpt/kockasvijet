@@ -340,6 +340,15 @@ ItemEntity.prototype.update = function (world, dt, game) {
   }
 };
 
+// sadržaj kovčega/peći ispadne kad se blok uništi
+KS.dropBlockEntContents = function (world, x, y, z) {
+  const be = world.blockEnts.get(x + ',' + y + ',' + z);
+  if (!be) return;
+  const stacks = be.type === 'chest' ? be.slots : [be.in, be.fuel, be.out];
+  for (const s of stacks) if (s) KS.spawnItem(world, x + 0.5, y + 0.5, z + 0.5, s, true);
+  world.blockEnts.delete(x + ',' + y + ',' + z);
+};
+
 KS.spawnItem = function (world, x, y, z, stack, gentle) {
   if (!stack || !stack.n) return;
   const e = new ItemEntity(x, y, z, { id: stack.id, n: stack.n, dur: stack.dur });
@@ -379,8 +388,9 @@ Mob.prototype.update = function (world, dt, game) {
   const p = game.player;
   const distP = p ? Math.hypot(p.x - this.x, p.y - this.y, p.z - this.z) : 999;
 
-  // despawn
-  if (distP > 70) { this.dead = true; return; }
+  // despawn — životinje se stvaraju na rubu vidljivosti, pa ih ne briši prije nego što se chunk izbaci
+  const maxD = this.type === 'zombie' ? 70 : Math.max(70, ((game.renderDist || 7) + 3) * 16);
+  if (distP > maxD) { this.dead = true; return; }
   if (this.type === 'zombie' && game.dayFactor > 0.5 && this.age > 5) {
     // zora — zombiji nestaju uz dim
     if (Math.random() < dt * 0.5) {
@@ -396,8 +406,13 @@ Mob.prototype.update = function (world, dt, game) {
     moveYaw = Math.atan2(p.x - this.x, p.z - this.z);
     this.headYaw = moveYaw;
     if (distP < 1.7 && this.attackT <= 0) {
-      this.attackT = 1.1;
-      p.hurt(3, this);
+      // ne udaraj kroz zid
+      const ex = this.x, ey = this.y + this.h * 0.85, ez = this.z;
+      const tx = p.x - ex, ty = p.y + 1.5 - ey, tz = p.z - ez, tl = Math.hypot(tx, ty, tz) || 1;
+      if (!KS.raycast(world, ex, ey, ez, tx / tl, ty / tl, tz / tl, tl, false, true)) {
+        this.attackT = 1.1;
+        p.hurt(3, this);
+      }
     }
   } else if (this.fleeT > 0) {
     moveYaw = this.fleeYaw;
@@ -421,11 +436,14 @@ Mob.prototype.update = function (world, dt, game) {
     while (d > Math.PI) d -= Math.PI * 2;
     while (d < -Math.PI) d += Math.PI * 2;
     this.yaw += KS.clamp(d, -3.5 * dt, 3.5 * dt);
-    const sp = this.speed * sprint;
-    this.vx += Math.sin(this.yaw) * sp * dt * 6;
-    this.vz += Math.cos(this.yaw) * sp * dt * 6;
-    const cur = Math.hypot(this.vx, this.vz);
-    if (cur > sp) { this.vx *= sp / cur; this.vz *= sp / cur; }
+    // dok traje odbacivanje ne hodaj (ograničenje brzine bi poništilo knockback)
+    if (this.hurtT <= 0) {
+      const sp = this.speed * sprint;
+      this.vx += Math.sin(this.yaw) * sp * dt * 6;
+      this.vz += Math.cos(this.yaw) * sp * dt * 6;
+      const cur = Math.hypot(this.vx, this.vz);
+      if (cur > sp) { this.vx *= sp / cur; this.vz *= sp / cur; }
+    }
   }
 
   const ph = this.physics(world, dt, { floats: true });
@@ -527,6 +545,7 @@ KS.explode = function (world, ex, ey, ez, radius) {
   }
   for (let i = 0; i < toClear.length; i += 4) {
     const x = toClear[i], y = toClear[i + 1], z = toClear[i + 2], id = toClear[i + 3];
+    KS.dropBlockEntContents(world, x, y, z);
     world.setBlock(x, y, z, 0);
     if (Math.random() < 0.25) {
       const def = KS.blocks[id];
@@ -596,7 +615,8 @@ KS.trySpawnHostile = function (world, game) {
       if (world.isSolid(x, yy, z) && !world.isSolid(x, yy + 1, z) && !world.isSolid(x, yy + 2, z)) { y = yy + 1; break; }
     }
     if (y < 0) continue;
-    const id = world.getBlock(x, y - 1, z);
+    // ne na dnu mora/jezera (voda nije čvrsta, pa je "površina" dno)
+    const id = world.getBlock(x, y, z);
     if (KS.blocks[id] && KS.blocks[id].liquid) continue;
     const sky = world.getSky(x, y, z) * game.dayFactor;
     const blk = world.getBlkL(x, y, z);

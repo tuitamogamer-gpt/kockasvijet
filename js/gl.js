@@ -61,6 +61,7 @@ layout(location=3) in float aShade;   // ×255
 layout(location=4) in vec3 aTint;     // ×255
 uniform mat4 uVP;
 uniform vec3 uOrigin;
+uniform vec3 uCam;
 out vec2 vUV;
 out float vSky;
 out float vBlk;
@@ -77,7 +78,7 @@ void main () {
   vBlk = mod(L, 16.0) / 15.0;
   vShade = aShade / 255.0;
   vTint = aTint / 255.0;
-  vDist = length(gl_Position.xyz);
+  vDist = distance(pos, uCam);
   vWorld = pos;
 }`;
 
@@ -145,6 +146,7 @@ layout(location=1) in vec2 aUV;
 layout(location=2) in float aShade;
 uniform mat4 uVP;
 uniform mat4 uModel;
+uniform vec3 uCam;
 out vec2 vUV;
 out float vShade;
 out float vDist;
@@ -153,7 +155,7 @@ void main () {
   gl_Position = uVP * wp;
   vUV = aUV;
   vShade = aShade;
-  vDist = length(gl_Position.xyz);
+  vDist = distance(wp.xyz, uCam);
 }`;
 KS.SHADERS.modelFS = `#version 300 es
 precision highp float;
@@ -172,7 +174,12 @@ void main () {
   vec4 tex = texture(uTex, vUV);
   if (tex.a < 0.1) discard;
   float l = uLight * uLight * 0.8 + uLight * 0.16 + 0.05;
-  vec3 col = tex.rgb * vShade * l;
+  // shade > 1.5 nosi tintu sivih tekstura (predmeti/blokovi u ruci): +2 trava, +4 lišće
+  float sh = vShade;
+  vec3 tint = vec3(1.0);
+  if (sh > 3.5) { sh -= 4.0; tint = vec3(0.40, 0.75, 0.25); }
+  else if (sh > 1.5) { sh -= 2.0; tint = vec3(0.55, 0.85, 0.35); }
+  vec3 col = tex.rgb * tint * sh * l;
   col = mix(col, uTintCol.rgb, uTintCol.a);
   if (uFogOn > 0.5) {
     float fog = clamp((vDist - uFogStart) / (uFogEnd - uFogStart), 0.0, 1.0);

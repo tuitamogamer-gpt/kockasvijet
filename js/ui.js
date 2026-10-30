@@ -230,10 +230,18 @@ ui.bindSlot = function (el, slot) {
         while (guard++ < 64) {
           const ss = slot.get();
           if (!ss) break;
-          const left = game.player.addItem({ id: ss.id, n: ss.n });
-          if (left > 0) break;
-          slot.onTake();
-          if (!slot.repeatable) break;
+          if (slot.repeatable) {
+            // crafting: uzmi samo ako cijeli rezultat stane (inače bi se dio dodao bez trošenja sastojaka)
+            if (roomFor(game.player.inv, ss) < ss.n) break;
+            game.player.addItem({ id: ss.id, n: ss.n, dur: ss.dur });
+            slot.onTake();
+          } else {
+            // peć: uzmi koliko stane, ostatak ostaje u izlazu
+            const left = game.player.addItem({ id: ss.id, n: ss.n, dur: ss.dur });
+            if (left > 0) { ss.n = left; break; }
+            slot.onTake();
+            break;
+          }
         }
       } else if (!cur) {
         ui.cursor = { id: s.id, n: s.n, dur: s.dur };
@@ -326,7 +334,7 @@ function invSlot (game, i) {
     set: (s) => { game.player.inv[i] = s; },
     quickMove: () => {
       const s = game.player.inv[i];
-      if (!s) return;
+      if (!s || ui.openType === 'creative') return; // kreativni prozor ne prikazuje slotove 9–35
       game.player.inv[i] = null;
       let left;
       if (ui.openType === 'chest' && ui.chestEnt) {
@@ -355,6 +363,16 @@ function addToRange (arr, from, to, stack) {
   return n;
 }
 function addToSlots (arr, stack) { return addToRange(arr, 0, arr.length, stack); }
+// koliko komada stacka stane u niz slotova
+function roomFor (arr, stack) {
+  const max = KS.maxStackOf(stack.id);
+  let room = 0;
+  for (const s of arr) {
+    if (!s) room += max;
+    else if (s.id === stack.id && s.dur === undefined && stack.dur === undefined) room += Math.max(0, max - s.n);
+  }
+  return room;
+}
 
 // ---------- otvaranje prozora ----------
 ui.openWindow = function (game, type, opts) {
@@ -581,7 +599,7 @@ ui.closeWindow = function (silent) {
     for (const s of ui.craftGrid) {
       if (s) {
         const left = game.player.addItem(s);
-        if (left > 0) KS.spawnItem(game.world, game.player.x, game.player.y + 1, game.player.z, { id: s.id, n: left });
+        if (left > 0) KS.spawnItem(game.world, game.player.x, game.player.y + 1, game.player.z, { id: s.id, n: left, dur: s.dur });
       }
     }
   }
@@ -764,7 +782,7 @@ ui.buildOptions = function (onChange) {
   };
 
   section('opt.sec.graphics');
-  slider('opt.rd', 'rd', 4, 12, 1, v => v + ' chunkova');
+  slider('opt.rd', 'rd', 4, 12, 1, v => v + KS.t('opt.chunks'));
   slider('opt.fov', 'fov', 60, 110, 1);
   toggle('opt.fog', 'fog');
   toggle('opt.clouds', 'clouds');
@@ -800,8 +818,8 @@ ui.buildControls = function () {
   list.innerHTML = '';
   const rows = [
     ['W A S D', 'ctl.move'], ['Space', 'ctl.jump'], ['Shift', 'ctl.sneak'], ['Ctrl / 2×W', 'ctl.sprint'],
-    ['Lijevi klik', 'ctl.break'], ['Desni klik', 'ctl.place'], ['E', 'ctl.inv'], ['Q', 'ctl.drop'],
-    ['1–9', 'ctl.hotbar'], ['Točkić', 'ctl.wheel'], ['F', 'ctl.persp'], ['F3', 'ctl.debug'],
+    [KS.t('key.lmb'), 'ctl.break'], [KS.t('key.rmb'), 'ctl.place'], ['E', 'ctl.inv'], ['Q', 'ctl.drop'],
+    ['1–9', 'ctl.hotbar'], [KS.t('key.wheel'), 'ctl.wheel'], ['F', 'ctl.persp'], ['F3', 'ctl.debug'],
     ['Esc', 'ctl.pause'], ['F2', 'ctl.shot'], ['2× Space', 'ctl.fly'], ['Space / Shift', 'ctl.flyud'],
   ];
   for (const [key, label] of rows) {

@@ -152,7 +152,7 @@ KS.meshChunk = function (world, chunk, smoothLight) {
             for (let side = 0; side < 2; side++) {
               const vs = [];
               for (let i = 0; i < 4; i++) {
-                const p = quad[side ? 3 - i : i];
+                const p = quad[side ? i ^ 1 : i]; // stražnja strana: obrnut redoslijed, ali dno ostaje dno
                 const uvi = UVC[i];
                 vs.push(opaqueB.vert(px + p[0], py + p[1], pz + p[2],
                   side ? (uvi[0] ? u0 : u1) : (uvi[0] ? u1 : u0), uvi[1] ? v1 : v0,

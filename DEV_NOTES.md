@@ -37,7 +37,13 @@ Sve visi na `const KS = window.KS = {}`. Moduli dodaju svoje stvari.
 ## Bitne lekcije iz razvoja (v1.0)
 - Petlja: rAF + watchdog `setInterval` (125ms) jer rAF ne radi u sakrivenom tabu; `tick(t)` čuva `lastTickAt`.
 - Pointer lock se u nekim okruženjima sam otpusti → `pointerlockchange` otvara pauzu (to je željeno ponašanje, kao alt-tab).
-- Treće lice: `back = persp===1 ? 1 : -1`; model entiteta rotira se s `rotateY(e.yaw)` (front dijelova je vizuelno na +Z zbog windinga); pivoti glave prase/krava su na +Z.
+- Treće lice: `back = persp===1 ? 1 : -1`; model entiteta rotira se s `rotateY(e.yaw)`, model gleda prema +Z (front strana je na +Z); pivoti glave prase/krava su na +Z.
+- Sve kocke modela/predmeta/pukotina moraju biti CCW gledano spolja (isto kao chunkovi) — inače back-face culling crta unutrašnjost (pukotine nevidljive, vrh glave pokazuje donju teksturu).
+- Model shader: `shade > 1.5` nosi tintu sivih tekstura (+2 trava, +4 lišće) za predmete u ruci/na podu.
+- Magla računa stvarnu udaljenost od kamere (`uCam` uniform u chunk i model shaderu), ne clip-space dužinu.
+- Svjetlo: `lightChunk` sije BFS samo iz ćelija koje mogu nešto promijeniti (rub chunka ili tamniji vodoravni susjed) — ~5× brže, isti rezultat. Ispod lišća/vode kolona drži konstantan nivo, pa `unpropagate` gasi i ćeliju ispod s istim nivoom.
+- Oblaci: šum po svjetskoj ćeliji, mreža se gradi iznova kad kamera pređe u drugu ćeliju (14 blokova) — ne smiju se centrirati dvaput.
+- Daleki chunkovi se izbacuju na početku `streamChunks` (prije posla s budžetom); izmijenjen chunk se ne izbacuje ako spremanje ne uspije.
 - Noć: `C.dayLight = max(dayF, 0.24)` ide u uDay/lightAt za render; sirovi `dayF` ostaje za logiku (spawn zombija <0.28).
 - Kriva svjetla u shaderu: `l*l*0.82 + l*0.16 + 0.035`.
 - NIKAD ne uređivati JS fajlove PowerShell regexom (mojibake UTF-8) — koristiti Edit tool.

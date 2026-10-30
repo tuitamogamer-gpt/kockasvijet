@@ -44,7 +44,8 @@ function Renderer (canvas) {
   this._buildSunMoon();
   this._buildStars();
   this._buildSelection();
-  this._buildClouds();
+  this._cloudNoise = new KS.Simplex(777);
+  this.clouds = null;
   this._modelVAOs = new Map();
   this._blockCubeVAOs = new Map();
   this._itemQuadVAOs = new Map();
@@ -74,7 +75,7 @@ Renderer.prototype.uploadChunk = function (chunk, mesh) {
     const ibo = gl.createBuffer();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, data.idx, gl.STATIC_DRAW);
-    // stride 16: pos u16A�3(6) uv u16A�2(4) light u8 shade u8 tint u8A�3 pad
+    // stride 16: pos u16×3(6) uv u16×2(4) light u8 shade u8 tint u8×3 pad
     gl.vertexAttribPointer(0, 3, gl.UNSIGNED_SHORT, false, 16, 0);
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(1, 2, gl.UNSIGNED_SHORT, false, 16, 6);
@@ -153,7 +154,7 @@ Renderer.prototype._buildStars = function () {
   const n = 280;
   const data = new Float32Array(n * 4);
   for (let i = 0; i < n; i++) {
-    // slu�Tajna ta�Tka na sferi
+    // slučajna tačka na sferi
     let x, y, z, l;
     do { x = rng() * 2 - 1; y = rng() * 2 - 1; z = rng() * 2 - 1; l = x * x + y * y + z * z; } while (l > 1 || l < 0.05);
     l = Math.sqrt(l);
@@ -190,13 +191,17 @@ Renderer.prototype._buildSelection = function () {
   gl.bindVertexArray(null);
   this.selBox = { vao, count: lines.length };
 };
-Renderer.prototype._buildClouds = function () {
+// oblaci: mreža ćelija oko (bx, bz) u svjetskim ćelijama — šum po svjetskoj poziciji, pa oblaci
+// stoje na mjestu (samo plove), a mreža se gradi iznova kad kamera pređe u drugu ćeliju
+const CLOUD_SIZE = 30, CLOUD_CELL = 14;
+Renderer.prototype._buildClouds = function (bx, bz) {
   const gl = this.gl;
-  const n = new KS.Simplex(777);
-  const verts = [], cols = [];
-  const SIZE = 30, CELL = 14;
+  if (this.clouds) { gl.deleteVertexArray(this.clouds.vao); gl.deleteBuffer(this.clouds.vbo); }
+  const n = this._cloudNoise;
+  const verts = [];
+  const SIZE = CLOUD_SIZE, CELL = CLOUD_CELL;
   for (let cz = -SIZE; cz < SIZE; cz++) for (let cx = -SIZE; cx < SIZE; cx++) {
-    if (n.noise2D(cx * 0.11, cz * 0.11) < 0.32) continue;
+    if (n.noise2D((bx + cx) * 0.11, (bz + cz) * 0.11) < 0.32) continue;
     const x0 = cx * CELL, z0 = cz * CELL;
     verts.push(
       x0, 0, z0,  x0 + CELL, 0, z0,  x0 + CELL, 0, z0 + CELL,
@@ -216,10 +221,10 @@ Renderer.prototype._buildClouds = function () {
   gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 28, 0); gl.enableVertexAttribArray(0);
   gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 28, 12); gl.enableVertexAttribArray(1);
   gl.bindVertexArray(null);
-  this.clouds = { vao, count: verts.length / 3, span: SIZE * 2 * CELL };
+  this.clouds = { vao, vbo, count: verts.length / 3, bx, bz };
 };
 
-// ---------- model dijelovi (kocka s UV-om po stranici skina 64A�64) ----------
+// ---------- model dijelovi (kocka s UV-om po stranici skina 64×64) ----------
 Renderer.prototype.partVAO = function (modelName, partIdx, part) {
   const key = modelName + '_' + partIdx;
   let v = this._modelVAOs.get(key);
@@ -228,14 +233,14 @@ Renderer.prototype.partVAO = function (modelName, partIdx, part) {
   const [sw, sh, sd] = part.size;
   const hx = sw / 2, hy = sh / 2, hz = sd / 2;
   const U = part.uv;
-  // svaka strana: 4 verta (pos, uv, shade)
+  // svaka strana: 4 verta (pos, uv, shade), CCW gledano spolja (kao chunkovi) — model gleda prema +Z
   const faces = [
-    { r: U.front,  shade: 0.86, c: [[-hx,-hy,-hz],[hx,-hy,-hz],[hx,hy,-hz],[-hx,hy,-hz]], flipU: false },
-    { r: U.back,   shade: 0.7,  c: [[hx,-hy,hz],[-hx,-hy,hz],[-hx,hy,hz],[hx,hy,hz]], flipU: false },
-    { r: U.right,  shade: 0.78, c: [[-hx,-hy,hz],[-hx,-hy,-hz],[-hx,hy,-hz],[-hx,hy,hz]], flipU: false },
-    { r: U.left,   shade: 0.78, c: [[hx,-hy,-hz],[hx,-hy,hz],[hx,hy,hz],[hx,hy,-hz]], flipU: false },
-    { r: U.top,    shade: 1.0,  c: [[-hx,hy,-hz],[hx,hy,-hz],[hx,hy,hz],[-hx,hy,hz]], flipU: false },
-    { r: U.bottom, shade: 0.6,  c: [[-hx,-hy,hz],[hx,-hy,hz],[hx,-hy,-hz],[-hx,-hy,-hz]], flipU: false },
+    { r: U.front,  shade: 0.86, c: [[-hx,-hy,hz],[hx,-hy,hz],[hx,hy,hz],[-hx,hy,hz]] },
+    { r: U.back,   shade: 0.7,  c: [[hx,-hy,-hz],[-hx,-hy,-hz],[-hx,hy,-hz],[hx,hy,-hz]] },
+    { r: U.right,  shade: 0.78, c: [[hx,-hy,hz],[hx,-hy,-hz],[hx,hy,-hz],[hx,hy,hz]] },
+    { r: U.left,   shade: 0.78, c: [[-hx,-hy,-hz],[-hx,-hy,hz],[-hx,hy,hz],[-hx,hy,-hz]] },
+    { r: U.top,    shade: 1.0,  c: [[-hx,hy,hz],[hx,hy,hz],[hx,hy,-hz],[-hx,hy,-hz]] },
+    { r: U.bottom, shade: 0.6,  c: [[-hx,-hy,-hz],[hx,-hy,-hz],[hx,-hy,hz],[-hx,-hy,hz]] },
   ];
   const verts = [], idx = [];
   let vi = 0;
@@ -267,7 +272,7 @@ Renderer.prototype.partVAO = function (modelName, partIdx, part) {
   return v;
 };
 
-// mini kocka bloka (za dropove i ruku) u atlas UV prostoru, jedini�Tna, centrirana
+// mini kocka bloka (za dropove i ruku) u atlas UV prostoru, jedinična, centrirana
 Renderer.prototype.blockCubeVAO = function (blockId) {
   let v = this._blockCubeVAOs.get(blockId);
   if (v) return v;
@@ -275,20 +280,22 @@ Renderer.prototype.blockCubeVAO = function (blockId) {
   const def = KS.blocks[blockId];
   const t = (tile) => { const [u, vv] = KS.atlas.uv(tile); return [u / 256, vv / 256, (u + 16) / 256, (vv + 16) / 256]; };
   const h = 0.5;
-  const tint = def.tint === 1 || def.tintTop || def.tint === 2;
+  // tinta trave/lišća (sive teksture) kodirana u shade: +2 trava, +4 lišće (vidi modelFS)
+  const tintAll = def.tint === 2 ? 4 : (def.tint === 1 ? 2 : 0);
+  const tintTop = def.tintTop ? 2 : tintAll;
   const faces = [
-    { tile: def.tex.front !== undefined ? def.tex.front : def.tex.side, shade: 0.86, c: [[-h,-h,-h],[h,-h,-h],[h,h,-h],[-h,h,-h]] },
-    { tile: def.tex.side, shade: 0.7,  c: [[h,-h,h],[-h,-h,h],[-h,h,h],[h,h,h]] },
-    { tile: def.tex.side, shade: 0.78, c: [[-h,-h,h],[-h,-h,-h],[-h,h,-h],[-h,h,h]] },
-    { tile: def.tex.side, shade: 0.78, c: [[h,-h,-h],[h,-h,h],[h,h,h],[h,h,-h]] },
-    { tile: def.tex.top, shade: 1.0,  c: [[-h,h,-h],[h,h,-h],[h,h,h],[-h,h,h]] },
-    { tile: def.tex.bot, shade: 0.6,  c: [[-h,-h,h],[h,-h,h],[h,-h,-h],[-h,-h,-h]] },
+    { tile: def.tex.front !== undefined ? def.tex.front : def.tex.side, shade: 0.86, c: [[-h,-h,h],[h,-h,h],[h,h,h],[-h,h,h]] },
+    { tile: def.tex.side, shade: 0.7,  c: [[h,-h,-h],[-h,-h,-h],[-h,h,-h],[h,h,-h]] },
+    { tile: def.tex.side, shade: 0.78, c: [[h,-h,h],[h,-h,-h],[h,h,-h],[h,h,h]] },
+    { tile: def.tex.side, shade: 0.78, c: [[-h,-h,-h],[-h,-h,h],[-h,h,h],[-h,h,-h]] },
+    { tile: def.tex.top, shade: 1.0,  c: [[-h,h,h],[h,h,h],[h,h,-h],[-h,h,-h]], top: true },
+    { tile: def.tex.bot, shade: 0.6,  c: [[-h,-h,-h],[h,-h,-h],[h,-h,h],[-h,-h,h]] },
   ];
   const verts = [], idx = [];
   let vi = 0;
   for (const f of faces) {
     const [u0, v0, u1, v1] = t(f.tile);
-    const sh = f.shade * (tint ? 0.75 : 1);
+    const sh = f.shade + (f.top ? tintTop : tintAll);
     const uvs = [[u0, v1], [u1, v1], [u1, v0], [u0, v0]];
     for (let i = 0; i < 4; i++) verts.push(f.c[i][0], f.c[i][1], f.c[i][2], uvs[i][0], uvs[i][1], sh);
     idx.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
@@ -315,18 +322,20 @@ Renderer.prototype.itemQuadVAO = function (id) {
   let v = this._itemQuadVAOs.get(id);
   if (v) return v;
   const gl = this.gl;
-  let u0, v0, u1, v1;
+  let u0, v0, u1, v1, tn = 0;
   if (KS.isBlockId(id)) {
-    const [u, vv] = KS.atlas.uv(KS.blocks[id].tex.side);
+    const def = KS.blocks[id];
+    const [u, vv] = KS.atlas.uv(def.tex.side);
     u0 = u / 256; v0 = vv / 256; u1 = (u + 16) / 256; v1 = (vv + 16) / 256;
+    tn = def.tint === 2 ? 4 : (def.tint === 1 ? 2 : 0); // tinta trave/lišća (vidi modelFS)
   } else {
     const [u, vv] = KS.itemAtlas.uv(KS.items[id].tex);
     u0 = u / 256; v0 = vv / 256; u1 = (u + 16) / 256; v1 = (vv + 16) / 256;
   }
-  const h = 0.5;
+  const h = 0.5, sa = 1 + tn, sb = 0.8 + tn;
   const verts = [
-    -h, -h, 0, u0, v1, 1,   h, -h, 0, u1, v1, 1,   h, h, 0, u1, v0, 1,   -h, h, 0, u0, v0, 1,
-    h, -h, 0, u1, v1, 0.8,  -h, -h, 0, u0, v1, 0.8, -h, h, 0, u0, v0, 0.8, h, h, 0, u1, v0, 0.8,
+    -h, -h, 0, u0, v1, sa,   h, -h, 0, u1, v1, sa,   h, h, 0, u1, v0, sa,   -h, h, 0, u0, v0, sa,
+    h, -h, 0, u1, v1, sb,  -h, -h, 0, u0, v1, sb, -h, h, 0, u0, v0, sb, h, h, 0, u1, v0, sb,
   ];
   const idx = [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
   const vao = gl.createVertexArray();
@@ -350,7 +359,7 @@ Renderer.prototype.itemQuadVAO = function (id) {
 Renderer.prototype.crackVAO = function (stage) {
   const gl = this.gl;
   if (!this._crackVAO) {
-    // dinami�Tka, update uv po stage-u: jednostavnije — 10 stati�Tkih
+    // dinamička, update uv po stage-u: jednostavnije — 10 statičkih
     this._crackVAO = [];
   }
   if (this._crackVAO[stage]) return this._crackVAO[stage];
@@ -371,7 +380,7 @@ Renderer.prototype.crackVAO = function (stage) {
   for (const f of faces) {
     const uvs = [[u0, v1], [u1, v1], [u1, v0], [u0, v0]];
     for (let i = 0; i < 4; i++) verts.push(f[i][0], f[i][1], f[i][2], uvs[i][0], uvs[i][1], 1);
-    idx.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
+    idx.push(vi, vi + 2, vi + 1, vi, vi + 3, vi + 2); // CCW spolja — inače back-face culling sakrije pukotine
     vi += 4;
   }
   const vao = gl.createVertexArray();
@@ -397,11 +406,11 @@ Renderer.prototype.skyColors = function (time) {
   const day = [0.45, 0.66, 1.0], night = [0.01, 0.015, 0.05];
   const mixv = (a, b, t) => [KS.lerp(a[0], b[0], t), KS.lerp(a[1], b[1], t), KS.lerp(a[2], b[2], t)];
   let sky = mixv(night, day, dayF);
-  // zora/sumrak narandLlasti horizont
+  // zora/sumrak narandžasti horizont
   const dawn = KS.clamp01(1 - Math.abs(sunH) * 3.4) * KS.clamp01(dayF * 2);
   let fog = mixv(sky, [0.98, 0.62, 0.35], dawn * 0.55);
   fog = mixv(fog, [1, 1, 1], dayF * 0.12);
-  // mjese�Tina: povrL?ina noću nije potpuno crna
+  // mjesečina: površina noću nije potpuno crna
   const dayLight = Math.max(dayF, 0.24);
   return { sky, fog, dayF, dayLight, sunH, dawn };
 };
@@ -412,11 +421,9 @@ Renderer.prototype.render = function (game, dt, opts) {
   this.frame++;
   const o = KS.opts;
   const canvas = this.canvas;
-  if (canvas.width !== canvas.clientWidth * (window.devicePixelRatio > 1.5 ? 1.5 : 1) | 0 || canvas.height !== canvas.clientHeight * (window.devicePixelRatio > 1.5 ? 1.5 : 1) | 0) {
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-    canvas.width = canvas.clientWidth * dpr | 0;
-    canvas.height = canvas.clientHeight * dpr | 0;
-  }
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  const cw = canvas.clientWidth * dpr | 0, chh = canvas.clientHeight * dpr | 0;
+  if (canvas.width !== cw || canvas.height !== chh) { canvas.width = cw; canvas.height = chh; }
   gl.viewport(0, 0, canvas.width, canvas.height);
 
   const world = game.world;
@@ -474,6 +481,11 @@ Renderer.prototype.render = function (game, dt, opts) {
   M4.translate(this.view, this.view, -eye.x, -eye.y, -eye.z);
   M4.multiply(this.vp, this.proj, this.view);
   const planes = KS.frustumPlanes(this.vp);
+  // pozicija kamere za maglu (stvarna udaljenost, ne clip-space)
+  gl.useProgram(this.chunkProg.prog);
+  gl.uniform3f(this.chunkProg.u.uCam, eye.x, eye.y, eye.z);
+  gl.useProgram(this.modelProg.prog);
+  gl.uniform3f(this.modelProg.u.uCam, eye.x, eye.y, eye.z);
 
   // pod vodom / lavom?
   const camBlock = world.getBlock(Math.floor(eye.x), Math.floor(eye.y), Math.floor(eye.z));
@@ -579,7 +591,7 @@ Renderer.prototype.render = function (game, dt, opts) {
   // ---- entiteti ----
   this.drawEntities(game, C, fogCol, fogStart, fogEnd, eye);
 
-  // ---- ozna�Teni blok + pukotine ----
+  // ---- označeni blok + pukotine ----
   if (!cam && p.target && !game.uiOpen) {
     const t = p.target;
     gl.useProgram(this.flatProg.prog);
@@ -613,7 +625,7 @@ Renderer.prototype.render = function (game, dt, opts) {
     }
   }
 
-  // ---- �Testice ----
+  // ---- čestice ----
   this.drawParticles(game, C, eye);
 
   // ---- voda (prozirno) ----
@@ -640,9 +652,10 @@ Renderer.prototype.render = function (game, dt, opts) {
     gl.useProgram(this.flatProg.prog);
     gl.uniformMatrix4fv(this.flatProg.u.uVP, false, this.vp);
     const m = M4.create();
-    const span = this.clouds.span;
-    const off = (game.now * 1.1) % 14;
-    M4.translate(m, m, Math.floor(eye.x / 14) * 14 - span / 2 + off, 88, Math.floor(eye.z / 14) * 14 - span / 2);
+    const drift = game.now * 1.1; // oblaci plove prema +X
+    const bx = Math.floor((eye.x - drift) / CLOUD_CELL), bz = Math.floor(eye.z / CLOUD_CELL);
+    if (!this.clouds || this.clouds.bx !== bx || this.clouds.bz !== bz) this._buildClouds(bx, bz);
+    M4.translate(m, m, bx * CLOUD_CELL + drift, 88, bz * CLOUD_CELL);
     gl.uniformMatrix4fv(this.flatProg.u.uModel, false, m);
     const cb = 0.5 + C.dayF * 0.5;
     gl.uniform4f(this.flatProg.u.uColor, cb, cb, cb * 1.04, 1);
@@ -763,7 +776,7 @@ Renderer.prototype.drawEntities = function (game, C, fogCol, fogStart, fogEnd, e
     }
   }
 
-  // igra�T u trećem licu
+  // igrač u trećem licu
   const p = game.player;
   if (!game.panorama && this.persp > 0 && p && !p.dead) {
     const fake = {
@@ -774,7 +787,7 @@ Renderer.prototype.drawEntities = function (game, C, fogCol, fogStart, fogEnd, e
   }
 };
 
-// ---------- �Testice ----------
+// ---------- čestice ----------
 Renderer.prototype.drawParticles = function (game, C, eye) {
   const list = KS.particles.list;
   if (!list.length) return;
